@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 
 # ====================== BOT SETTINGS ======================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")  # BotFather-dən götürün
-ADMIN_IDS = [123456789]  # Öz Telegram ID-nizi yazın (bir neçə ola bilər)
+BOT_TOKEN = os.getenv("8639319524:AAHY7g_lTSHPLiP55xfry7uYnM4bZHqCVB4")  # BotFather-dən götürün
+ADMIN_IDS = [8753136288]  # Öz Telegram ID-nizi yazın (bir neçə ola bilər)
 
 # ====================== DATABASE ======================
 DB_PATH = "database/sazcoin.db"
