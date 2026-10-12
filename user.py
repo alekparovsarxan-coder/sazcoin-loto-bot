@@ -1,4 +1,4 @@
-# handlers/user.py
+# user.py
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery
 from aiogram.filters import CommandStart, Command
@@ -6,9 +6,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_IDS, MIN_TOPUP, MIN_WITHDRAW, WITHDRAW_FEE_PERCENT, CURRENCY_SYMBOL, DAILY_TICKET
-from database import db
-from keyboards.inline import main_menu_kb, rooms_kb, confirm_buy_kb, topup_kb, back_main_kb
-from services.draw_service import buy_ticket, can_buy_ticket
+import db
+from inline import main_menu_kb, rooms_kb, confirm_buy_kb, topup_kb, back_main_kb
+from draw_service import buy_ticket, can_buy_ticket
 
 router = Router()
 

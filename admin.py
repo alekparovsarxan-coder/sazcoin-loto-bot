@@ -1,4 +1,4 @@
-# handlers/admin.py
+# admin.py
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
@@ -6,8 +6,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_IDS
-from database import db
-from keyboards.inline import admin_panel_kb, main_menu_kb, back_main_kb
+import db
+from inline import admin_panel_kb, main_menu_kb, back_main_kb
 
 router = Router()
 

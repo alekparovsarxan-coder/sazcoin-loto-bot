@@ -1,9 +1,9 @@
-# services/draw_service.py
+# draw_service.py
 import random
 import time
 from typing import Optional, Tuple, List
 from config import WIN_RULES, MAX_TICKETS_PER_USER
-from database import db
+import db
 
 
 def get_win_rule(price: int) -> Tuple[int, int]:

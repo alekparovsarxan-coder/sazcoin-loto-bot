@@ -1,22 +1,8 @@
 # main.py
-import sys
-import os
-from pathlib import Path
-
-# ====================== CRITICAL PATH FIX FOR RAILWAY ======================
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR))
-os.chdir(BASE_DIR)  # working directory-ni də düzəldirik
-
-# Debug (Railway log-da görünəcək)
-print("=" * 50)
-print(f"BASE_DIR: {BASE_DIR}")
-print(f"Files in BASE_DIR: {os.listdir(BASE_DIR)}")
-print(f"sys.path[0]: {sys.path[0]}")
-print("=" * 50)
-
 import asyncio
 import logging
+import time
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -26,31 +12,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from config import BOT_TOKEN, ROOMS, DAILY_TICKET, DAILY_HOUR, DAILY_MINUTE, ADMIN_IDS
-
-# database import
-try:
-    from database.db import init_db
-    from database import db
-except ModuleNotFoundError as e:
-    print(f"IMPORT ERROR: {e}")
-    print("Trying alternative import...")
-    # Alternativ yol
-    import importlib.util
-    db_path = BASE_DIR / "database" / "db.py"
-    if not db_path.exists():
-        print(f"database/db.py NOT FOUND at {db_path}")
-        print(f"Contents of BASE_DIR: {list(BASE_DIR.iterdir())}")
-        raise
-    spec = importlib.util.spec_from_file_location("database.db", db_path)
-    db_module = importlib.util.module_from_spec(spec)
-    sys.modules["database.db"] = db_module
-    spec.loader.exec_module(db_module)
-    init_db = db_module.init_db
-    db = db_module
-
-from handlers import user, admin
-from services.draw_service import process_draw, generate_fake_winner_text, generate_real_winner_text
-import time
+import db
+from db import init_db
+import user
+import admin
+from draw_service import process_draw, generate_fake_winner_text, generate_real_winner_text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,7 +27,6 @@ scheduler = AsyncIOScheduler()
 
 
 async def check_and_finish_draws():
-    """Aktiv tirajları yoxlayır və vaxtı bitənləri yekunlaşdırır."""
     import aiosqlite
     from config import DB_PATH
     now = time.time()
@@ -105,14 +70,12 @@ async def check_and_finish_draws():
 
 
 async def ensure_active_draws():
-    """Hər otaq üçün aktiv tiraj olduğundan əmin olur."""
     for interval, prices in ROOMS.items():
         for price in prices:
             await db.get_or_create_active_draw(price, interval)
 
 
 async def create_daily_draw():
-    """Hər gün 21:00-da 20000-lik tiraj yaradır."""
     await db.get_or_create_active_draw(DAILY_TICKET, 86400)
     for admin_id in ADMIN_IDS:
         try:
