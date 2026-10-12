@@ -9,14 +9,13 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
 
-from config import BOT_TOKEN, ROOMS, DAILY_TICKET, DAILY_HOUR, DAILY_MINUTE, ADMIN_IDS
+from config import BOT_TOKEN, TICKET_PRICES, ADMIN_IDS, DRAWN_COUNT, SALES_CLOSE_BEFORE
 import db
 from db import init_db
 import user
 import admin
-from draw_service import process_draw_step, DRAWN_COUNT
+from draw_service import process_draw_step
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,84 +26,81 @@ scheduler = AsyncIOScheduler()
 
 
 async def run_live_draws():
-    """
-    Каждые несколько секунд проверяем активные тиражи
-    и выбрасываем следующее число (если пришло время).
-    """
-    import aiosqlite
-    from config import DB_PATH
     now = time.time()
-
-    async with aiosqlite.connect(DB_PATH) as conn:
-        conn.row_factory = aiosqlite.Row
-        async with conn.execute(
-            "SELECT * FROM draws WHERE status = 'active'"
-        ) as cursor:
-            draws = await cursor.fetchall()
-
+    draws = await db.get_active_draws()
     for d in draws:
         draw_id = d["draw_id"]
-        start = d["start_time"]
-        end = d["end_time"]
-        interval = d["interval_sec"]
-        step = d["draw_step"] or 0
+        status = d["status"]
+        step = d.get("draw_step") or 0
 
-        if now < start:
+        # Переход registration → drawing
+        if status == "registration" and now >= d["draw_start"]:
+            await db.set_draw_status(draw_id, "drawing")
+            # Уведомить участников о старте
+            tickets = await db.get_tickets_for_draw(draw_id)
+            users = set(t["user_id"] for t in tickets)
+            for uid in users:
+                try:
+                    await bot.send_message(uid, "🎱 <b>Розыгрыш начался!</b>\nЧисла будут выпадать одно за другим...", parse_mode="HTML")
+                except:
+                    pass
+            status = "drawing"
+
+        if status != "drawing":
             continue
 
-        # Сколько чисел уже должно было выпасть к этому моменту
-        # Равномерно распределяем DRAWN_COUNT чисел по времени тиража
+        start = d["draw_start"]
+        end = d["draw_end"]
+        duration = max(1, end - start)
         elapsed = now - start
-        duration = end - start
-        if duration <= 0:
-            duration = interval
+        step_dur = max(8, duration / (DRAWN_COUNT + 0.5))
+        expected = min(DRAWN_COUNT, int(elapsed / step_dur) + (1 if elapsed > 2 else 0))
 
-        # Каждое число примерно через (duration / DRAWN_COUNT) секунд
-        step_duration = max(8, duration / (DRAWN_COUNT + 1))  # минимум 8 сек между числами
-        expected_step = min(DRAWN_COUNT, int(elapsed / step_duration))
-
-        # Если тираж уже закончился по времени — дорисовываем оставшиеся числа и завершаем
         if now >= end:
             while step < DRAWN_COUNT:
-                still_going = await process_draw_step(draw_id, bot)
-                if not still_going:
+                ok = await process_draw_step(draw_id, bot)
+                if not ok:
                     break
                 step += 1
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
             continue
 
-        # Обычный шаг: выпало ли уже следующее число
-        if expected_step > step:
+        if expected > step:
             await process_draw_step(draw_id, bot)
 
 
-async def ensure_active_draws():
-    for interval, prices in ROOMS.items():
-        for price in prices:
-            await db.get_or_create_active_draw(price, interval)
+async def ensure_draws():
+    for price in TICKET_PRICES:
+        await db.get_or_create_draw(price)
 
 
-async def create_daily_draw():
-    await db.get_or_create_active_draw(DAILY_TICKET, 86400)
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, f"🌟 Ежедневный тираж {DAILY_TICKET} 🪙 создан!")
-        except:
-            pass
+async def sales_close_notify():
+    """За ~30 сек до старта предупредить участников."""
+    now = time.time()
+    draws = await db.get_active_draws()
+    for d in draws:
+        if d["status"] != "registration":
+            continue
+        left = d["reg_end"] - now
+        if 28 <= left <= 35:
+            tickets = await db.get_tickets_for_draw(d["draw_id"])
+            users = set(t["user_id"] for t in tickets)
+            for uid in users:
+                try:
+                    await bot.send_message(uid, f"🔒 <b>Продажа билетов закрыта!</b>\nЧерез ~30 сек начнётся розыгрыш {d['room_price']} 🪙", parse_mode="HTML")
+                except:
+                    pass
 
 
 async def on_startup():
     await init_db()
-    logger.info("Database initialized")
-
-    # Каждые 5 секунд проверяем и выбрасываем числа
-    scheduler.add_job(run_live_draws, IntervalTrigger(seconds=5))
-    scheduler.add_job(ensure_active_draws, IntervalTrigger(seconds=30))
-    scheduler.add_job(create_daily_draw, CronTrigger(hour=DAILY_HOUR, minute=DAILY_MINUTE))
-
+    logger.info("DB ready")
+    scheduler.add_job(run_live_draws, IntervalTrigger(seconds=4))
+    scheduler.add_job(ensure_draws, IntervalTrigger(seconds=20))
+    scheduler.add_job(sales_close_notify, IntervalTrigger(seconds=10))
     scheduler.start()
+    await ensure_draws()
     logger.info("Scheduler started")
-    await ensure_active_draws()
 
 
 async def main():

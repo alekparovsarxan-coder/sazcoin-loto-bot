@@ -1,6 +1,6 @@
 # inline.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from config import ROOMS, DAILY_TICKET
+from config import TICKET_PRICES, BRAND
 
 
 def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -18,49 +18,31 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
 def rooms_kb() -> InlineKeyboardMarkup:
     buttons = []
     row = []
-    for price in ROOMS[60]:
-        row.append(InlineKeyboardButton(text=f"{price} 🪙 (1м)", callback_data=f"buy_{price}_60"))
+    for price in TICKET_PRICES:
+        row.append(InlineKeyboardButton(text=f"{price} 🪙", callback_data=f"price_{price}"))
         if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-
-    row = []
-    for price in ROOMS[300]:
-        row.append(InlineKeyboardButton(text=f"{price} 🪙 (5м)", callback_data=f"buy_{price}_300"))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    row = []
-    for price in ROOMS[600]:
-        row.append(InlineKeyboardButton(text=f"{price} 🪙 (10м)", callback_data=f"buy_{price}_600"))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    buttons.append([InlineKeyboardButton(text=f"🌟 {DAILY_TICKET} 🪙 (Ежедневно 21:00)", callback_data=f"buy_{DAILY_TICKET}_daily")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def confirm_buy_kb(price: int, interval: int) -> InlineKeyboardMarkup:
+def qty_kb(price: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_buy_{price}_{interval}"),
-            InlineKeyboardButton(text="❌ Отмена", callback_data="back_rooms")
-        ]
+            InlineKeyboardButton(text="1 билет", callback_data=f"qty_{price}_1"),
+            InlineKeyboardButton(text="2 билета", callback_data=f"qty_{price}_2"),
+            InlineKeyboardButton(text="3 билета", callback_data=f"qty_{price}_3"),
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_rooms")]
     ])
 
 
 def topup_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Через Telegram Stars", callback_data="topup_stars")],
+        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="topup_stars")],
         [InlineKeyboardButton(text="👤 Написать админу", callback_data="topup_admin")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
@@ -68,10 +50,11 @@ def topup_kb() -> InlineKeyboardMarkup:
 
 def admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Касса (банк)", callback_data="admin_bank")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
         [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="admin_withdraws")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="⚙️ Настройки тиражей", callback_data="admin_settings")],
+        [InlineKeyboardButton(text="⚙️ % выплат", callback_data="admin_payout_pct")],
         [InlineKeyboardButton(text="➕ Добавить баланс", callback_data="admin_add_balance")],
         [InlineKeyboardButton(text="⬅️ Выход", callback_data="back_main")]
     ])

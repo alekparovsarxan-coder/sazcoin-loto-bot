@@ -30,32 +30,30 @@ async def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             room_price INTEGER,
-            interval_sec INTEGER,
             amount REAL,
             numbers TEXT,
             created_at REAL,
             draw_id TEXT,
             is_winner INTEGER DEFAULT 0,
             win_amount REAL DEFAULT 0,
-            matches INTEGER DEFAULT 0,
-            FOREIGN KEY(user_id) REFERENCES users(user_id)
+            matches INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS draws (
             draw_id TEXT PRIMARY KEY,
             room_price INTEGER,
-            interval_sec INTEGER,
-            start_time REAL,
-            end_time REAL,
+            reg_start REAL,
+            reg_end REAL,
+            draw_start REAL,
+            draw_end REAL,
             total_pot REAL DEFAULT 0,
             participants_count INTEGER DEFAULT 0,
-            real_users_count INTEGER DEFAULT 0,
             winner_user_id INTEGER,
             winner_amount REAL DEFAULT 0,
             is_bot_win INTEGER DEFAULT 0,
             drawn_numbers TEXT DEFAULT '[]',
             draw_step INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'active'
+            status TEXT DEFAULT 'registration'
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
@@ -86,13 +84,24 @@ async def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS house_bank (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            balance REAL DEFAULT 0,
+            total_in REAL DEFAULT 0,
+            total_out REAL DEFAULT 0
+        );
         """)
+        await db.execute("INSERT OR IGNORE INTO house_bank (id, balance, total_in, total_out) VALUES (1, 0, 0, 0)")
         await db.commit()
 
-        # Миграция: добавляем недостающие колонки если база старая
         migrations = [
             "ALTER TABLE draws ADD COLUMN drawn_numbers TEXT DEFAULT '[]'",
             "ALTER TABLE draws ADD COLUMN draw_step INTEGER DEFAULT 0",
+            "ALTER TABLE draws ADD COLUMN reg_start REAL",
+            "ALTER TABLE draws ADD COLUMN reg_end REAL",
+            "ALTER TABLE draws ADD COLUMN draw_start REAL",
+            "ALTER TABLE draws ADD COLUMN draw_end REAL",
             "ALTER TABLE tickets ADD COLUMN numbers TEXT",
             "ALTER TABLE tickets ADD COLUMN matches INTEGER DEFAULT 0",
         ]
@@ -101,7 +110,49 @@ async def init_db():
                 await db.execute(sql)
                 await db.commit()
             except Exception:
-                pass  # колонка уже существует
+                pass
+
+
+async def get_setting(key: str, default: str = "") -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else default
+
+
+async def set_setting(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+            (key, value, value)
+        )
+        await db.commit()
+
+
+async def get_house_bank() -> Dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM house_bank WHERE id = 1") as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else {"balance": 0, "total_in": 0, "total_out": 0}
+
+
+async def house_add(amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE house_bank SET balance = balance + ?, total_in = total_in + ? WHERE id = 1",
+            (amount, amount)
+        )
+        await db.commit()
+
+
+async def house_pay(amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE house_bank SET balance = balance - ?, total_out = total_out + ? WHERE id = 1",
+            (amount, amount)
+        )
+        await db.commit()
 
 
 async def get_user(user_id: int) -> Optional[Dict]:
@@ -116,8 +167,7 @@ async def create_user(user_id: int, username: str = None, full_name: str = None)
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT OR IGNORE INTO users 
-               (user_id, username, full_name, created_at, last_active) 
+            """INSERT OR IGNORE INTO users (user_id, username, full_name, created_at, last_active) 
                VALUES (?, ?, ?, ?, ?)""",
             (user_id, username, full_name, now, now)
         )
@@ -127,14 +177,11 @@ async def create_user(user_id: int, username: str = None, full_name: str = None)
 async def update_user_activity(user_id: int, username: str = None, full_name: str = None):
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
-        if username or full_name:
-            await db.execute(
-                """UPDATE users SET last_active = ?, username = COALESCE(?, username), 
-                   full_name = COALESCE(?, full_name) WHERE user_id = ?""",
-                (now, username, full_name, user_id)
-            )
-        else:
-            await db.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (now, user_id))
+        await db.execute(
+            """UPDATE users SET last_active = ?, username = COALESCE(?, username), 
+               full_name = COALESCE(?, full_name) WHERE user_id = ?""",
+            (now, username, full_name, user_id)
+        )
         await db.commit()
 
 
@@ -158,82 +205,53 @@ async def change_balance(user_id: int, amount: float, tx_type: str, description:
         elif tx_type == "withdraw":
             await db.execute("UPDATE users SET total_withdrawn = total_withdrawn + ? WHERE user_id = ?", (abs(amount), user_id))
         await db.execute(
-            """INSERT INTO transactions (user_id, type, amount, description, created_at) 
-               VALUES (?, ?, ?, ?, ?)""",
+            "INSERT INTO transactions (user_id, type, amount, description, created_at) VALUES (?, ?, ?, ?, ?)",
             (user_id, tx_type, amount, description, time.time())
         )
         await db.commit()
         return True
 
 
-async def get_balance(user_id: int) -> float:
-    user = await get_user(user_id)
-    return user["balance"] if user else 0.0
-
-
-async def add_ticket(user_id: int, room_price: int, interval_sec: int, draw_id: str, numbers: list) -> bool:
-    ok = await change_balance(user_id, -room_price, "ticket", f"Билет: {room_price} 🪙")
-    if not ok:
-        return False
+async def get_user_active_draw_price(user_id: int) -> Optional[int]:
+    """Если пользователь уже купил билет в активном тираже — вернуть цену этого тиража."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """INSERT INTO tickets (user_id, room_price, interval_sec, amount, numbers, created_at, draw_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, room_price, interval_sec, room_price, json.dumps(numbers), time.time(), draw_id)
-        )
-        await db.execute(
-            """UPDATE draws SET total_pot = total_pot + ?, participants_count = participants_count + 1
-               WHERE draw_id = ?""",
-            (room_price, draw_id)
-        )
-        await db.commit()
-    return True
+        async with db.execute("""
+            SELECT t.room_price FROM tickets t
+            JOIN draws d ON t.draw_id = d.draw_id
+            WHERE t.user_id = ? AND d.status IN ('registration', 'drawing')
+            LIMIT 1
+        """, (user_id,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
 
 
-async def get_user_tickets_in_draw(user_id: int, draw_id: str) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM tickets WHERE user_id = ? AND draw_id = ?",
-            (user_id, draw_id)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
-
-
-async def get_tickets_for_draw(draw_id: str) -> List[Dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM tickets WHERE draw_id = ?", (draw_id,)) as cursor:
-            rows = await cursor.fetchall()
-            result = []
-            for r in rows:
-                d = dict(r)
-                d["numbers"] = json.loads(d["numbers"]) if d.get("numbers") else []
-                result.append(d)
-            return result
-
-
-async def get_or_create_active_draw(room_price: int, interval_sec: int) -> str:
+async def get_or_create_draw(room_price: int) -> str:
+    """Цикл: 5 мин регистрация + 1 мин розыгрыш."""
+    from config import REGISTRATION_SEC, DRAW_DURATION_SEC
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT draw_id FROM draws 
-               WHERE room_price = ? AND interval_sec = ? AND status = 'active' AND end_time > ?
-               ORDER BY end_time LIMIT 1""",
-            (room_price, interval_sec, now)
-        ) as cursor:
-            row = await cursor.fetchone()
+        async with db.execute("""
+            SELECT draw_id FROM draws
+            WHERE room_price = ? AND status IN ('registration', 'drawing')
+            AND draw_end > ?
+            ORDER BY reg_start DESC LIMIT 1
+        """, (room_price, now)) as cur:
+            row = await cur.fetchone()
             if row:
                 return row["draw_id"]
+
         import uuid
         draw_id = str(uuid.uuid4())
-        end_time = now + interval_sec
-        await db.execute(
-            """INSERT INTO draws (draw_id, room_price, interval_sec, start_time, end_time, status, drawn_numbers, draw_step)
-               VALUES (?, ?, ?, ?, ?, 'active', '[]', 0)""",
-            (draw_id, room_price, interval_sec, now, end_time)
-        )
+        reg_start = now
+        reg_end = now + REGISTRATION_SEC
+        draw_start = reg_end
+        draw_end = draw_start + DRAW_DURATION_SEC
+        await db.execute("""
+            INSERT INTO draws (draw_id, room_price, reg_start, reg_end, draw_start, draw_end,
+                               status, drawn_numbers, draw_step, total_pot, participants_count)
+            VALUES (?, ?, ?, ?, ?, ?, 'registration', '[]', 0, 0, 0)
+        """, (draw_id, room_price, reg_start, reg_end, draw_start, draw_end))
         await db.commit()
         return draw_id
 
@@ -250,6 +268,84 @@ async def get_draw(draw_id: str) -> Optional[Dict]:
             return d
 
 
+async def get_active_draws() -> List[Dict]:
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT * FROM draws
+            WHERE status IN ('registration', 'drawing') AND draw_end > ?
+            ORDER BY room_price
+        """, (now,)) as cur:
+            rows = await cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["drawn_numbers"] = json.loads(d["drawn_numbers"]) if d.get("drawn_numbers") else []
+                result.append(d)
+            return result
+
+
+async def add_tickets(user_id: int, room_price: int, draw_id: str, tickets_numbers: List[List[int]]) -> bool:
+    total = room_price * len(tickets_numbers)
+    ok = await change_balance(user_id, -total, "ticket", f"Билеты x{len(tickets_numbers)} по {room_price}")
+    if not ok:
+        return False
+    async with aiosqlite.connect(DB_PATH) as db:
+        for nums in tickets_numbers:
+            await db.execute("""
+                INSERT INTO tickets (user_id, room_price, amount, numbers, created_at, draw_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, room_price, room_price, json.dumps(nums), time.time(), draw_id))
+        await db.execute("""
+            UPDATE draws SET total_pot = total_pot + ?, participants_count = participants_count + ?
+            WHERE draw_id = ?
+        """, (total, len(tickets_numbers), draw_id))
+        await db.commit()
+    await house_add(total)
+    return True
+
+
+async def get_user_tickets_in_draw(user_id: int, draw_id: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM tickets WHERE user_id = ? AND draw_id = ?", (user_id, draw_id)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def get_tickets_for_draw(draw_id: str) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM tickets WHERE draw_id = ?", (draw_id,)) as cursor:
+            rows = await cursor.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["numbers"] = json.loads(d["numbers"]) if d.get("numbers") else []
+                result.append(d)
+            return result
+
+
+async def get_user_tickets_history(user_id: int, limit: int = 20) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT t.*, d.status as draw_status, d.drawn_numbers, d.is_bot_win
+            FROM tickets t LEFT JOIN draws d ON t.draw_id = d.draw_id
+            WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT ?
+        """, (user_id, limit)) as cur:
+            rows = await cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["numbers"] = json.loads(d["numbers"]) if d.get("numbers") else []
+                d["drawn_numbers"] = json.loads(d["drawn_numbers"]) if d.get("drawn_numbers") else []
+                result.append(d)
+            return result
+
+
 async def update_draw_numbers(draw_id: str, drawn_numbers: list, step: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -259,24 +355,18 @@ async def update_draw_numbers(draw_id: str, drawn_numbers: list, step: int):
         await db.commit()
 
 
-async def get_draw_participants(draw_id: str) -> List[Dict]:
+async def set_draw_status(draw_id: str, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT DISTINCT user_id FROM tickets WHERE draw_id = ?""",
-            (draw_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+        await db.execute("UPDATE draws SET status = ? WHERE draw_id = ?", (status, draw_id))
+        await db.commit()
 
 
 async def finish_draw(draw_id: str, winner_user_id: Optional[int], win_amount: float, is_bot_win: bool):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """UPDATE draws SET status = 'finished', winner_user_id = ?, winner_amount = ?, is_bot_win = ?
-               WHERE draw_id = ?""",
-            (winner_user_id, win_amount, 1 if is_bot_win else 0, draw_id)
-        )
+        await db.execute("""
+            UPDATE draws SET status = 'finished', winner_user_id = ?, winner_amount = ?, is_bot_win = ?
+            WHERE draw_id = ?
+        """, (winner_user_id, win_amount, 1 if is_bot_win else 0, draw_id))
         if winner_user_id and not is_bot_win and win_amount > 0:
             await db.execute(
                 "UPDATE tickets SET is_winner = 1, win_amount = ? WHERE draw_id = ? AND user_id = ?",
@@ -291,15 +381,21 @@ async def set_ticket_matches(ticket_id: int, matches: int):
         await db.commit()
 
 
-async def create_withdraw_request(user_id: int, amount: float, fee: float, net_amount: float,
-                                  card_number: str, card_holder: str) -> int:
+async def get_draw_participants(draw_id: str) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            """INSERT INTO withdraw_requests 
-               (user_id, amount, fee, net_amount, card_number, card_holder, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, amount, fee, net_amount, card_number, card_holder, time.time())
-        )
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT DISTINCT user_id FROM tickets WHERE draw_id = ?", (draw_id,)
+        ) as cursor:
+            return [dict(r) for r in await cursor.fetchall()]
+
+
+async def create_withdraw_request(user_id, amount, fee, net_amount, card_number, card_holder) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO withdraw_requests (user_id, amount, fee, net_amount, card_number, card_holder, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, amount, fee, net_amount, card_number, card_holder, time.time()))
         await db.commit()
         return cursor.lastrowid
 
@@ -310,8 +406,7 @@ async def get_pending_withdraws() -> List[Dict]:
         async with db.execute(
             "SELECT * FROM withdraw_requests WHERE status = 'pending' ORDER BY created_at"
         ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in await cursor.fetchall()]
 
 
 async def get_all_users(limit: int = 50) -> List[Dict]:
@@ -320,5 +415,4 @@ async def get_all_users(limit: int = 50) -> List[Dict]:
         async with db.execute(
             "SELECT * FROM users ORDER BY last_active DESC LIMIT ?", (limit,)
         ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in await cursor.fetchall()]
