@@ -16,7 +16,7 @@ import db
 from db import init_db
 import user
 import admin
-from draw_service import process_draw, generate_fake_winner_text, generate_real_winner_text
+from draw_service import process_draw_step, DRAWN_COUNT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,52 +26,56 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
 
-async def check_and_finish_draws():
+async def run_live_draws():
+    """
+    Каждые несколько секунд проверяем активные тиражи
+    и выбрасываем следующее число (если пришло время).
+    """
     import aiosqlite
     from config import DB_PATH
     now = time.time()
+
     async with aiosqlite.connect(DB_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         async with conn.execute(
-            "SELECT draw_id, room_price FROM draws WHERE status = 'active' AND end_time <= ?",
-            (now,)
+            "SELECT * FROM draws WHERE status = 'active'"
         ) as cursor:
             draws = await cursor.fetchall()
 
     for d in draws:
         draw_id = d["draw_id"]
-        result = await process_draw(draw_id)
-        if not result:
+        start = d["start_time"]
+        end = d["end_time"]
+        interval = d["interval_sec"]
+        step = d["draw_step"] or 0
+
+        if now < start:
             continue
 
-        # Только если были реальные участники — уведомляем
-        if result["real_users"] == 0:
+        # Сколько чисел уже должно было выпасть к этому моменту
+        # Равномерно распределяем DRAWN_COUNT чисел по времени тиража
+        elapsed = now - start
+        duration = end - start
+        if duration <= 0:
+            duration = interval
+
+        # Каждое число примерно через (duration / DRAWN_COUNT) секунд
+        step_duration = max(8, duration / (DRAWN_COUNT + 1))  # минимум 8 сек между числами
+        expected_step = min(DRAWN_COUNT, int(elapsed / step_duration))
+
+        # Если тираж уже закончился по времени — дорисовываем оставшиеся числа и завершаем
+        if now >= end:
+            while step < DRAWN_COUNT:
+                still_going = await process_draw_step(draw_id, bot)
+                if not still_going:
+                    break
+                step += 1
+                await asyncio.sleep(0.3)
             continue
 
-        participants = await db.get_draw_participants(draw_id)
-        if result["is_bot_win"]:
-            text = generate_fake_winner_text(result["fake_name"], result["win_amount"], result["pot"])
-        else:
-            winner = await db.get_user(result["winner_id"])
-            name = f"@{winner['username']}" if winner and winner.get('username') else f"ID{result['winner_id']}"
-            text = generate_real_winner_text(name, result["win_amount"], result["pot"], result["percent"])
-
-        for p in participants:
-            try:
-                await bot.send_message(p["user_id"], text)
-            except Exception as e:
-                logger.warning(f"Не удалось отправить: {p['user_id']}: {e}")
-
-        # Уведомление админу только когда были игроки
-        if result["is_bot_win"]:
-            admin_text = f"🤖 Бот выиграл | {d['room_price']} 🪙 | Касса: {result['pot']:.0f} | Игроков: {result['real_users']}"
-        else:
-            admin_text = f"🏆 Победитель: {result['winner_id']} | {result['win_amount']:.0f} 🪙 | Касса: {result['pot']:.0f}"
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, admin_text)
-            except:
-                pass
+        # Обычный шаг: выпало ли уже следующее число
+        if expected_step > step:
+            await process_draw_step(draw_id, bot)
 
 
 async def ensure_active_draws():
@@ -92,9 +96,12 @@ async def create_daily_draw():
 async def on_startup():
     await init_db()
     logger.info("Database initialized")
-    scheduler.add_job(check_and_finish_draws, IntervalTrigger(seconds=15))
+
+    # Каждые 5 секунд проверяем и выбрасываем числа
+    scheduler.add_job(run_live_draws, IntervalTrigger(seconds=5))
     scheduler.add_job(ensure_active_draws, IntervalTrigger(seconds=30))
     scheduler.add_job(create_daily_draw, CronTrigger(hour=DAILY_HOUR, minute=DAILY_MINUTE))
+
     scheduler.start()
     logger.info("Scheduler started")
     await ensure_active_draws()
