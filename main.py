@@ -3,9 +3,17 @@ import sys
 import os
 from pathlib import Path
 
-# Railway və digər hostinglər üçün import yolunu düzəldir
+# ====================== CRITICAL PATH FIX FOR RAILWAY ======================
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
+os.chdir(BASE_DIR)  # working directory-ni də düzəldirik
+
+# Debug (Railway log-da görünəcək)
+print("=" * 50)
+print(f"BASE_DIR: {BASE_DIR}")
+print(f"Files in BASE_DIR: {os.listdir(BASE_DIR)}")
+print(f"sys.path[0]: {sys.path[0]}")
+print("=" * 50)
 
 import asyncio
 import logging
@@ -18,10 +26,30 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from config import BOT_TOKEN, ROOMS, DAILY_TICKET, DAILY_HOUR, DAILY_MINUTE, ADMIN_IDS
-from database.db import init_db
+
+# database import
+try:
+    from database.db import init_db
+    from database import db
+except ModuleNotFoundError as e:
+    print(f"IMPORT ERROR: {e}")
+    print("Trying alternative import...")
+    # Alternativ yol
+    import importlib.util
+    db_path = BASE_DIR / "database" / "db.py"
+    if not db_path.exists():
+        print(f"database/db.py NOT FOUND at {db_path}")
+        print(f"Contents of BASE_DIR: {list(BASE_DIR.iterdir())}")
+        raise
+    spec = importlib.util.spec_from_file_location("database.db", db_path)
+    db_module = importlib.util.module_from_spec(spec)
+    sys.modules["database.db"] = db_module
+    spec.loader.exec_module(db_module)
+    init_db = db_module.init_db
+    db = db_module
+
 from handlers import user, admin
 from services.draw_service import process_draw, generate_fake_winner_text, generate_real_winner_text
-from database import db
 import time
 
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +79,6 @@ async def check_and_finish_draws():
         if not result:
             continue
 
-        # İştirakçılara bildiriş göndər
         participants = await db.get_draw_participants(draw_id)
         if result["is_bot_win"]:
             text = generate_fake_winner_text(result["fake_name"], result["win_amount"], result["pot"])
@@ -66,7 +93,6 @@ async def check_and_finish_draws():
             except Exception as e:
                 logger.warning(f"Bildiriş göndərilmədi {p['user_id']}: {e}")
 
-        # Adminə qısa bildiriş
         if result["is_bot_win"]:
             admin_text = f"🤖 Bot qazandı | {d['room_price']} 🪙 | Kassa: {result['pot']:.0f}"
         else:
@@ -84,9 +110,6 @@ async def ensure_active_draws():
         for price in prices:
             await db.get_or_create_active_draw(price, interval)
 
-    # Gündəlik tiraj (əgər bu gün hələ yoxdursa və vaxtı keçməyibsə)
-    # Sadəlik üçün gündəlik də interval kimi idarə olunur, cron ilə ayrıca yaradılacaq
-
 
 async def create_daily_draw():
     """Hər gün 21:00-da 20000-lik tiraj yaradır."""
@@ -102,26 +125,18 @@ async def on_startup():
     await init_db()
     logger.info("Database initialized")
 
-    # Hər 15 saniyədə bitmiş tirajları yoxla
     scheduler.add_job(check_and_finish_draws, IntervalTrigger(seconds=15))
-
-    # Hər 30 saniyədə aktiv tirajların mövcudluğunu təmin et
     scheduler.add_job(ensure_active_draws, IntervalTrigger(seconds=30))
-
-    # Gündəlik tiraj
     scheduler.add_job(create_daily_draw, CronTrigger(hour=DAILY_HOUR, minute=DAILY_MINUTE))
 
     scheduler.start()
     logger.info("Scheduler started")
-
-    # Başlanğıcda otaqları yarat
     await ensure_active_draws()
 
 
 async def main():
     dp.include_router(user.router)
     dp.include_router(admin.router)
-
     dp.startup.register(on_startup)
 
     logger.info("Bot işə düşür...")
