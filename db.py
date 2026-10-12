@@ -6,6 +6,10 @@ from config import DB_PATH
 
 
 async def init_db():
+    # Qovluğun mövcud olduğundan əmin oluruq (Railway Volume üçün vacibdir)
+    from pathlib import Path
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
         CREATE TABLE IF NOT EXISTS users (

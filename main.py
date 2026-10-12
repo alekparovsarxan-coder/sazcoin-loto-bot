@@ -1,4 +1,12 @@
 # main.py
+import sys
+import os
+from pathlib import Path
+
+# Railway və digər hostinglər üçün import yolunu düzəldir
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
