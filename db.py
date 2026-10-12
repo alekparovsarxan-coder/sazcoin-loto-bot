@@ -89,6 +89,20 @@ async def init_db():
         """)
         await db.commit()
 
+        # Миграция: добавляем недостающие колонки если база старая
+        migrations = [
+            "ALTER TABLE draws ADD COLUMN drawn_numbers TEXT DEFAULT '[]'",
+            "ALTER TABLE draws ADD COLUMN draw_step INTEGER DEFAULT 0",
+            "ALTER TABLE tickets ADD COLUMN numbers TEXT",
+            "ALTER TABLE tickets ADD COLUMN matches INTEGER DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                await db.execute(sql)
+                await db.commit()
+            except Exception:
+                pass  # колонка уже существует
+
 
 async def get_user(user_id: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:

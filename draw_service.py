@@ -15,15 +15,22 @@ def generate_ticket_numbers() -> List[int]:
 
 
 def format_ticket(numbers: List[int], drawn: List[int] = None) -> str:
-    """Красивый билет. Совпавшие числа помечаются ✅"""
+    """Красивый билет SazLoto. Совпавшие числа помечаются ✅"""
     drawn = drawn or []
-    lines = []
+    cells = []
     for n in numbers:
         if n in drawn:
-            lines.append(f"✅ <b>{n:02d}</b>")
+            cells.append(f"✅<b>{n:02d}</b>")
         else:
-            lines.append(f"⬜ {n:02d}")
-    return "  ".join(lines)
+            cells.append(f"⬜{n:02d}")
+    row = " │ ".join(cells)
+    return (
+        "╔══════════════════════════╗\n"
+        "║     🎟 <b>SazLoto</b> 🎟      ║\n"
+        "╠══════════════════════════╣\n"
+        f"║  {row}  ║\n"
+        "╚══════════════════════════╝"
+    )
 
 
 def get_win_rule(price: int) -> Tuple[int, int]:

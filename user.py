@@ -32,7 +32,7 @@ async def cmd_start(message: Message):
     is_admin = user_id in ADMIN_IDS
     text = (
         f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
-        f"🎟 Добро пожаловать в <b>SazCoin Loto</b>!\n\n"
+        f"🎟 Добро пожаловать в <b>SazLoto</b>!\n\n"
         f"Здесь вы можете участвовать в тиражах, выигрывать и выводить средства.\n\n"
         f"💰 Пополните баланс, купите билет и попробуйте удачу!\n\n"
         f"Используйте кнопки ниже 👇"
@@ -133,7 +133,7 @@ async def topup_stars(callback: CallbackQuery, bot: Bot):
     prices = [LabeledPrice(label="1000 sazcoin", amount=10)]
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Пополнение SazCoin",
+        title="Пополнение SazLoto",
         description="1000 sazcoin будут добавлены на ваш баланс",
         payload="topup_1000",
         provider_token="",
