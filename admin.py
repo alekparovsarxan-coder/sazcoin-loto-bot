@@ -21,13 +21,13 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-@router.message(F.text == "🛠 Admin Panel")
+@router.message(F.text == "🛠 Админ панель")
 @router.message(Command("admin"))
 async def admin_panel(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("Sizin icazəniz yoxdur.")
+        await message.answer("Нет доступа.")
         return
-    await message.answer("🛠 <b>Admin Panel</b>\n\nSeçim edin:", reply_markup=admin_panel_kb(), parse_mode="HTML")
+    await message.answer("🛠 <b>Админ панель</b>\n\nВыберите действие:", reply_markup=admin_panel_kb(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin_users")
@@ -36,14 +36,13 @@ async def admin_users(callback: CallbackQuery):
         return
     users = await db.get_all_users(30)
     if not users:
-        await callback.message.edit_text("İstifadəçi yoxdur.", reply_markup=admin_panel_kb())
+        await callback.message.edit_text("Пользователей нет.", reply_markup=admin_panel_kb())
         return
-
-    text = "👥 <b>Son aktiv istifadəçilər:</b>\n\n"
+    text = "👥 <b>Последние пользователи:</b>\n\n"
     for u in users:
         text += (
-            f"• <code>{u['user_id']}</code> @{u['username'] or '-'}\n"
-            f"  Balans: {u['balance']:.0f} | Uduş: {u['total_won']:.0f} | Uduzma: {u['total_lost']:.0f}\n\n"
+            f"• <code>{u['user_id']}</code> @{u['username'] or '—'}\n"
+            f"  Баланс: {u['balance']:.0f} | Выигрыш: {u['total_won']:.0f} | Проигрыш: {u['total_lost']:.0f}\n\n"
         )
     await callback.message.edit_text(text[:4000], reply_markup=admin_panel_kb(), parse_mode="HTML")
     await callback.answer()
@@ -55,17 +54,16 @@ async def admin_withdraws(callback: CallbackQuery):
         return
     reqs = await db.get_pending_withdraws()
     if not reqs:
-        await callback.message.edit_text("Gözləyən çıxarış tələbi yoxdur.", reply_markup=admin_panel_kb())
+        await callback.message.edit_text("Нет заявок на вывод.", reply_markup=admin_panel_kb())
         await callback.answer()
         return
-
-    text = "💸 <b>Gözləyən çıxarışlar:</b>\n\n"
+    text = "💸 <b>Заявки на вывод:</b>\n\n"
     for r in reqs:
         text += (
             f"#{r['id']} | User: <code>{r['user_id']}</code>\n"
-            f"Məbləğ: {r['amount']:.0f} → Net: {r['net_amount']:.0f}\n"
-            f"Kart: <code>{r['card_number']}</code>\n"
-            f"Sahib: {r['card_holder']}\n"
+            f"Сумма: {r['amount']:.0f} → Нетто: {r['net_amount']:.0f}\n"
+            f"Карта: <code>{r['card_number']}</code>\n"
+            f"Владелец: {r['card_holder']}\n"
             f"/approve_{r['id']}  /reject_{r['id']}\n\n"
         )
     await callback.message.edit_text(text[:4000], reply_markup=admin_panel_kb(), parse_mode="HTML")
@@ -80,9 +78,7 @@ async def approve_withdraw(message: Message, bot: Bot):
         req_id = int(message.text.split("_")[1])
     except:
         return
-
-    import aiosqlite
-    import time
+    import aiosqlite, time
     from config import DB_PATH
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
@@ -94,10 +90,10 @@ async def approve_withdraw(message: Message, bot: Bot):
             row = await cur.fetchone()
             if row:
                 try:
-                    await bot.send_message(row[0], f"✅ Çıxarış tələbiniz #{req_id} təsdiqləndi!\n{row[1]:.0f} 🪙 göndərildi.")
+                    await bot.send_message(row[0], f"✅ Заявка на вывод #{req_id} одобрена!\nВам переведено {row[1]:.0f} 🪙")
                 except:
                     pass
-    await message.answer(f"✅ #{req_id} təsdiqləndi.")
+    await message.answer(f"✅ #{req_id} одобрена.")
 
 
 @router.message(F.text.startswith("/reject_"))
@@ -108,26 +104,49 @@ async def reject_withdraw(message: Message, bot: Bot):
         req_id = int(message.text.split("_")[1])
     except:
         return
-
-    import aiosqlite
+    import aiosqlite, time
     from config import DB_PATH
-    import time
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute("SELECT user_id, amount FROM withdraw_requests WHERE id = ?", (req_id,)) as cur:
             row = await cur.fetchone()
         if row:
-            # Pulu geri qaytar
-            await db.change_balance(row[0], row[1], "admin_add", f"Çıxarış rədd edildi #{req_id}")
+            await db.change_balance(row[0], row[1], "admin_add", f"Вывод отклонён #{req_id}")
             await conn.execute(
                 "UPDATE withdraw_requests SET status = 'rejected', processed_at = ? WHERE id = ?",
                 (time.time(), req_id)
             )
             await conn.commit()
             try:
-                await bot.send_message(row[0], f"❌ Çıxarış tələbiniz #{req_id} rədd edildi. Məbləğ geri qaytarıldı.")
+                await bot.send_message(row[0], f"❌ Заявка на вывод #{req_id} отклонена. Средства возвращены.")
             except:
                 pass
-    await message.answer(f"❌ #{req_id} rədd edildi.")
+    await message.answer(f"❌ #{req_id} отклонена.")
+
+
+@router.message(Command("addbal"))
+async def cmd_addbal(message: Message, bot: Bot):
+    """Быстрое пополнение: /addbal USER_ID СУММА"""
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("Использование: /addbal USER_ID СУММА\nПример: /addbal 123456789 5000")
+        return
+    try:
+        uid = int(parts[1])
+        amount = float(parts[2])
+    except:
+        await message.answer("Неверный формат. Пример: /addbal 123456789 5000")
+        return
+    ok = await db.change_balance(uid, amount, "admin_add" if amount > 0 else "admin_remove", "Админ")
+    if ok:
+        await message.answer(f"✅ Пользователю <code>{uid}</code> изменено на {amount:+.0f} 🪙", parse_mode="HTML")
+        try:
+            await bot.send_message(uid, f"💰 Админ изменил ваш баланс на <b>{amount:+.0f} 🪙</b>", parse_mode="HTML")
+        except:
+            pass
+    else:
+        await message.answer("Ошибка (пользователь не найден или баланс стал бы отрицательным).")
 
 
 @router.callback_query(F.data == "admin_add_balance")
@@ -135,7 +154,7 @@ async def admin_add_balance_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
     await state.set_state(AdminAddBalance.waiting_user_id)
-    await callback.message.edit_text("İstifadəçi ID-sini yazın:")
+    await callback.message.edit_text("Введите User ID:")
     await callback.answer()
 
 
@@ -144,11 +163,11 @@ async def admin_add_user_id(message: Message, state: FSMContext):
     try:
         uid = int(message.text.strip())
     except:
-        await message.answer("Düzgün ID yazın.")
+        await message.answer("Введите корректный ID.")
         return
     await state.update_data(user_id=uid)
     await state.set_state(AdminAddBalance.waiting_amount)
-    await message.answer("Məbləği yazın (müsbət = artır, mənfi = azaldır):")
+    await message.answer("Введите сумму (положительная = пополнить, отрицательная = снять):")
 
 
 @router.message(AdminAddBalance.waiting_amount)
@@ -156,29 +175,26 @@ async def admin_add_amount(message: Message, state: FSMContext, bot: Bot):
     try:
         amount = float(message.text.replace(",", ".").strip())
     except:
-        await message.answer("Düzgün rəqəm yazın.")
+        await message.answer("Введите корректное число.")
         return
-
     data = await state.get_data()
     await state.clear()
     uid = data["user_id"]
-
-    ok = await db.change_balance(uid, amount, "admin_add" if amount > 0 else "admin_remove", "Admin tərəfindən")
+    ok = await db.change_balance(uid, amount, "admin_add" if amount > 0 else "admin_remove", "Админ")
     if ok:
-        await message.answer(f"✅ {uid} istifadəçisinə {amount:+.0f} 🪙 tətbiq olundu.")
+        await message.answer(f"✅ Пользователю {uid} изменено на {amount:+.0f} 🪙")
         try:
-            await bot.send_message(uid, f"💰 Admin balansınıza <b>{amount:+.0f} 🪙</b> dəyişiklik etdi.", parse_mode="HTML")
+            await bot.send_message(uid, f"💰 Админ изменил ваш баланс на <b>{amount:+.0f} 🪙</b>", parse_mode="HTML")
         except:
             pass
     else:
-        await message.answer("Xəta baş verdi (istifadəçi yoxdur və ya balans mənfi ola bilməz).")
+        await message.answer("Ошибка.")
 
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    # Sadə statistika
     import aiosqlite
     from config import DB_PATH
     async with aiosqlite.connect(DB_PATH) as conn:
@@ -186,14 +202,13 @@ async def admin_stats(callback: CallbackQuery):
             row = await cur.fetchone()
         async with conn.execute("SELECT COUNT(*) FROM draws WHERE status = 'finished'") as cur:
             draws = (await cur.fetchone())[0]
-
     text = (
-        f"📊 <b>Ümumi statistika</b>\n\n"
-        f"👥 İstifadəçi sayı: {row[0] or 0}\n"
-        f"💰 Ümumi balanslar: {row[1] or 0:.0f} 🪙\n"
-        f"🏆 Ümumi uduşlar: {row[2] or 0:.0f} 🪙\n"
-        f"📉 Ümumi uduzmalar: {row[3] or 0:.0f} 🪙\n"
-        f"🎯 Bitmiş tirajlar: {draws}"
+        f"📊 <b>Статистика</b>\n\n"
+        f"👥 Пользователей: {row[0] or 0}\n"
+        f"💰 Общий баланс: {row[1] or 0:.0f} 🪙\n"
+        f"🏆 Всего выиграно: {row[2] or 0:.0f} 🪙\n"
+        f"📉 Всего проиграно: {row[3] or 0:.0f} 🪙\n"
+        f"🎯 Завершённых тиражей: {draws}"
     )
     await callback.message.edit_text(text, reply_markup=admin_panel_kb(), parse_mode="HTML")
     await callback.answer()
@@ -202,8 +217,7 @@ async def admin_stats(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_settings")
 async def admin_settings(callback: CallbackQuery):
     await callback.message.edit_text(
-        "⚙️ Tiraj tənzimləmələri hələlik config.py faylından dəyişilir.\n"
-        "Gələcəkdə bot daxilindən dəyişmək mümkün olacaq.",
+        "⚙️ Настройки тиражей пока меняются через config.py",
         reply_markup=admin_panel_kb()
     )
     await callback.answer()
